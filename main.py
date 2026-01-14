@@ -159,7 +159,12 @@ class AuditResultParser:
                     reasons.append(item["msg"])
             return "不合规", ", ".join(reasons)
         elif conclusion == "疑似":
-            return "疑似", "内容疑似违规，需要人工审核"
+            reasons = []
+            for item in data:
+                if "msg" in item:
+                    reasons.append(item["msg"])
+            reason_text = ", ".join(reasons) if reasons else "内容疑似违规，需要人工审核"
+            return "疑似", reason_text
         else:
             return "审核失败", "未知审核结果"
     
@@ -183,7 +188,14 @@ class AuditResultParser:
                     reasons.append(item["type"])
             return "不合规", ", ".join(reasons)
         elif conclusion == "疑似":
-            return "疑似", "图片疑似违规，需要人工审核"
+            reasons = []
+            for item in data:
+                if "msg" in item:
+                    reasons.append(item["msg"])
+                elif "type" in item:
+                    reasons.append(item["type"])
+            reason_text = ", ".join(reasons) if reasons else "图片疑似违规，需要人工审核"
+            return "疑似", reason_text
         else:
             return "审核失败", "未知审核结果"
 
@@ -392,7 +404,7 @@ class GroupAipReviewPlugin(Star):
         
         # 发送通知
         rule_id = group_config.get("rule_id", "default")
-        notification_msg = f"⚠️ 检测到违规内容\n类型: {audit_data.audit_type}\n用户: {audit_data.user_id}\n原因: {audit_data.reason}\n规则ID: {rule_id}"
+        notification_msg = f"⚠️ 检测到违规内容\n类型: {audit_data.audit_type}\n原因: {audit_data.reason}\n规则ID: {rule_id}"
         await self._send_notification(group_id, notification_msg, audit_data.group_name, audit_data.user_nickname, audit_data.user_id)
         
         # 检查是否需要禁言或踢人
@@ -404,7 +416,7 @@ class GroupAipReviewPlugin(Star):
         rule_id = group_config.get("rule_id", "default")
         
         # 发送通知给管理员核实
-        notification_msg = f"❓ 检测到疑似违规内容\n类型: {audit_data.audit_type}\n用户: {audit_data.user_id}\n原因: {audit_data.reason}\n规则ID: {rule_id}\n请管理员核实处理"
+        notification_msg = f"❓ 检测到疑似违规内容\n类型: {audit_data.audit_type}\n原因: {audit_data.reason}\n规则ID: {rule_id}\n请管理员核实处理"
         await self._send_notification(group_id, notification_msg, audit_data.group_name, audit_data.user_nickname, audit_data.user_id)
     
     async def _handle_audit_failure(self, event: AstrMessageEvent, audit_type: str, reason: str, group_config: Dict):
