@@ -529,11 +529,7 @@ class GroupAipReviewPlugin(Star):
         group_name = event.message_obj.raw_message.get("group_name", "未知群") if event.message_obj.raw_message else "未知群"
         user_nickname = event.message_obj.raw_message.get("sender", {}).get("nickname", "未知用户") if event.message_obj.raw_message and event.message_obj.raw_message.get("sender") else "未知用户"
         user_id = event.message_obj.raw_message.get("sender", {}).get("user_id", "未知用户号") if event.message_obj.raw_message and event.message_obj.raw_message.get("sender") else "未知用户号"
-        
-        # 调试用
-        logger.info(f"【百度内容审核插件】消息原始字段：{event.message_obj.raw_message}")
-        logger.info(f"【百度内容审核插件】消息类型：{type(event.message_obj.raw_message)}")
-        
+                
         # 提取消息内容
         message_text = event.message_str
         image_urls = []
