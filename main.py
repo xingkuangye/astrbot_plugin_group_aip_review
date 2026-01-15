@@ -476,6 +476,21 @@ class GroupAipReviewPlugin(Star):
             notification_msg = f"⚠️ 群内出现大量违规内容\n群ID: {group_id}\n违规次数: {group_violations}次\n已开启全员禁言，请管理员及时处理\n规则ID: {rule_id}"
             await self._send_notification(group_id, notification_msg, audit_data.group_name, audit_data.user_nickname, audit_data.user_id)
     
+    async def _check_user_permission(self, event: AstrMessageEvent, user_id: str, group_id: str) -> bool:
+        """检查用户是否有权限（群主、管理员或 Bot 管理员）"""
+        # 首先检查是否是 Bot 管理员
+        if event.is_admin():
+            return True
+        
+        # 如果不是 Bot 管理员，检查群权限
+        try:
+            member_info = await event.bot.api.call_action("get_group_member_info", group_id=group_id, user_id=int(user_id))
+            role = member_info.get("role")
+            return role in ["admin", "owner"]
+        except Exception as e:
+            logger.error(f"检查用户权限失败: {e}")
+            return False
+    
     def _format_mute_duration(self, duration: int) -> str:
         """格式化禁言时间显示"""
         if duration >= 3600:
@@ -554,6 +569,12 @@ class GroupAipReviewPlugin(Star):
         # 检查是否在白名单中
         enabled_groups = self.config.get("enabled_groups", [])
         if not enabled_groups or group_id not in enabled_groups:
+            return
+        
+        # 检查用户权限（bot管理员、群主、管理员跳过审核）
+        user_id = event.message_obj.raw_message.get("sender", {}).get("user_id", "未知用户号") if event.message_obj.raw_message and event.message_obj.raw_message.get("sender") else "未知用户号"
+        if await self._check_user_permission(event, user_id, group_id):
+            logger.debug(f"用户 {user_id} 为管理员，跳过审核")
             return
         
         # 检查百度API是否可用
