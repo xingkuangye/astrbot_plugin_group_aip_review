@@ -454,7 +454,8 @@ class GroupAipReviewPlugin(Star):
             await self._mute_user(audit_data.event, mute_duration)
             
             # 发送通知到通知群
-            notification_msg = f"⚠️ 用户违规禁言通知\n群ID: {group_id}\n用户ID: {audit_data.user_id}\n违规次数: {user_violations}次\n已禁言 {mute_duration // 3600} 小时，请管理员关注。\n规则ID: {rule_id}"
+            mute_time_str = self._format_mute_duration(mute_duration)
+            notification_msg = f"⚠️ 用户违规禁言通知\n群ID: {group_id}\n用户ID: {audit_data.user_id}\n违规次数: {user_violations}次\n已禁言 {mute_time_str}，请管理员关注。\n规则ID: {rule_id}"
             await self._send_notification(group_id, notification_msg, audit_data.group_name, audit_data.user_nickname, audit_data.user_id)
             
             # 检查是否需要踢人
@@ -471,9 +472,32 @@ class GroupAipReviewPlugin(Star):
             rule_id = group_config.get("rule_id", "default")
             await self._mute_all_members(audit_data.event)
             
-            # 在通知群@全体成员
+            # 在通知群发送通知
             notification_msg = f"⚠️ 群内出现大量违规内容\n群ID: {group_id}\n违规次数: {group_violations}次\n已开启全员禁言，请管理员及时处理\n规则ID: {rule_id}"
             await self._send_notification(group_id, notification_msg, audit_data.group_name, audit_data.user_nickname, audit_data.user_id)
+    
+    def _format_mute_duration(self, duration: int) -> str:
+        """格式化禁言时间显示"""
+        if duration >= 3600:
+            # 大于等于1小时，显示小时和分钟
+            hours = duration // 3600
+            remaining_seconds = duration % 3600
+            minutes = remaining_seconds // 60
+            if minutes > 0:
+                return f"{hours} 小时 {minutes} 分钟"
+            else:
+                return f"{hours} 小时"
+        elif duration >= 60:
+            # 大于等于1分钟，显示分钟和秒
+            minutes = duration // 60
+            seconds = duration % 60
+            if seconds > 0:
+                return f"{minutes} 分钟 {seconds} 秒"
+            else:
+                return f"{minutes} 分钟"
+        else:
+            # 小于1分钟，显示秒
+            return f"{duration} 秒"
     
     async def _mute_user(self, event: AstrMessageEvent, duration: int):
         """禁言用户"""

@@ -79,7 +79,7 @@
 - `log_level`：日志级别（默认INFO）
 
 ## 技术支持
-
 如有问题或建议，请通过以下方式联系：
 - 插件作者：VanillaNahida
 - GitHub仓库：https://github.com/VanillaNahida/astrbot_plugin_group_aip_review
+- QQ群：[195260107](https://qm.qq.com/q/1od5TMYrKE)
