@@ -27,15 +27,19 @@
 
 > [!TIP]
 >
-> 本插件仅做群聊消息处理和对接百度审核API，实际判定规则和阈值需要你在百度云控制台中设置规则和判定条件。
+> 本插件仅做群聊消息处理和对接百度审核API，实际判定规则和阈值需要你在[百度云控制台](https://console.bce.baidu.com/)中设置规则和判定条件。
 
 ### 百度API配置
 
 在插件配置页面填写以下必填项：
 
-- `api_key`：百度云API Key（从百度云控制台获取）
-- `secret_key`：百度云Secret Key（从百度云控制台获取）
+- `api_key`：百度云API Key（从[百度云控制台](https://console.bce.baidu.com/)获取）
+- `secret_key`：百度云Secret Key（从[百度云控制台](https://console.bce.baidu.com/)获取）
 - `strategy_id`：自定义审核策略ID（可选）
+
+> [!IMPORTANT]
+> 作者发现，百度的云审核每个应用的策略有且只能生效一种审核策略，这样会导致不同的群都会共享一套审核策略，如果要设置成不同的群单独审核策略，则需要给每个群设置一个APPID和Secret，如有建议欢迎提[Issue](https://github.com/VanillaNahida/astrbot_plugin_group_aip_review/issues)。
+
 
 ### 审核处置配置
 
