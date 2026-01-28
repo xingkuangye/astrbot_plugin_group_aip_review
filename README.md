@@ -1,6 +1,6 @@
 # AstrBot 群聊内容安全审查插件
 
-基于百度内容审核API的群聊内容安全审查插件，支持文本、图片，GIF表情包内容审核，自动撤回违规内容。
+基于百度内容审核API的群聊内容安全审查插件，支持文本、图片，GIF表情包内容审核，自动撤回违规内容并发送到通知群。让你的Bot化身消息审核小助手
 
 ## TODO List （待办功能实现）
 - [ ] 完成违规信息原始消息合并转发功能（目前不知道如何构建转发消息，如您有想法欢迎PR！）
@@ -24,6 +24,10 @@
 3. 安装好后打开插件配置，配置百度内容审核API参数、策略ID和启用群号（详见配置说明）
 
 ## 配置说明
+
+> [!TIP]
+>
+> 本插件仅做群聊消息处理和对接百度审核API，实际判定规则和阈值需要你在百度云控制台中设置规则和判定条件。
 
 ### 百度API配置
 
@@ -85,6 +89,6 @@
 
 ## 技术支持
 如有问题或建议，请通过以下方式联系：
-- 插件作者：VanillaNahida
+- 插件作者：[@VanillaNahida](https://github.com/VanillaNahida)
 - GitHub仓库：https://github.com/VanillaNahida/astrbot_plugin_group_aip_review
 - QQ群：[195260107](https://qm.qq.com/q/1od5TMYrKE)
