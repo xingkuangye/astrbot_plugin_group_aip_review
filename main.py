@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Image, Plain
+from astrbot.api.message_components import Image, Plain, Node
 from astrbot.api.star import Context, Star, register
 
 # 检查并导入第三方依赖
@@ -320,7 +320,7 @@ class GroupAipReviewPlugin(Star):
         
         return group_config
     
-    async def _send_notification(self, group_id: str, message: str, group_name: str = None, user_nickname: str = None, user_id: str = None):
+    async def _send_notification(self, group_id: str, message: str, group_name: str = None, user_nickname: str = None, user_id: str = None, event: AstrMessageEvent = None, audit_data: AuditData = None):
         """发送通知消息"""
         try:
             group_config = self.get_group_config(group_id)
@@ -328,22 +328,27 @@ class GroupAipReviewPlugin(Star):
             rule_id = group_config.get("rule_id", "default")
             
             if notify_group_id:
-                # 获取所有平台实例
-                from astrbot.api.platform import Platform
-                platforms = self.context.platform_manager.get_insts()
-                
-                # 遍历所有平台，找到支持发送群消息的平台
-                for platform in platforms:
-                    client = platform.get_client()
-                    if hasattr(client, 'send_group_msg'):
-                        # 在消息中添加群名称和用户昵称
-                        notification_with_info = f"{message}\n群：{group_name}（{group_id}）\n用户：{user_nickname}（{user_id}）"
-                        await client.send_group_msg(
-                            group_id=notify_group_id,
-                            message=notification_with_info
-                        )
-                        logger.info(f"发送通知到群 {notify_group_id}: {notification_with_info}")
-                        break
+                # 如果提供了event和audit_data，使用合并转发消息
+                if event and audit_data:
+                    await self._send_forward_message(event, notify_group_id, message, audit_data)
+                else:
+                    # 否则使用普通消息通知
+                    # 获取所有平台实例
+                    from astrbot.api.platform import Platform
+                    platforms = self.context.platform_manager.get_insts()
+                    
+                    # 遍历所有平台，找到支持发送群消息的平台
+                    for platform in platforms:
+                        client = platform.get_client()
+                        if hasattr(client, 'send_group_msg'):
+                            # 在消息中添加群名称和用户昵称
+                            notification_with_info = f"{message}\n群：{group_name}（{group_id}）\n用户：{user_nickname}（{user_id}）"
+                            await client.send_group_msg(
+                                group_id=notify_group_id,
+                                message=notification_with_info
+                            )
+                            logger.info(f"发送通知到群 {notify_group_id}: {notification_with_info}")
+                            break
         except Exception as e:
             logger.error(f"发送通知失败: {e}")
     
@@ -366,6 +371,89 @@ class GroupAipReviewPlugin(Star):
                     break
         except Exception as e:
             logger.error(f"发送私聊消息失败: {e}")
+    
+    async def _send_forward_message(self, event: AstrMessageEvent, notify_group_id: str, notification_msg: str, audit_data: AuditData):
+        """发送合并转发消息"""
+        try:
+            # 获取所有平台实例
+            from astrbot.api.platform import Platform
+            platforms = self.context.platform_manager.get_insts()
+            
+            # 遍历所有平台，找到支持发送合并转发消息的平台
+            for platform in platforms:
+                client = platform.get_client()
+                if hasattr(client, 'call_action'):
+                    # 构建第一个node节点：Bot发送的通知消息
+                    bot_node = {
+                        "type": "node",
+                        "data": {
+                            "user_id": event.get_self_id(),
+                            "nickname": "违规消息通知",
+                            "id": "",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "data": {
+                                        "text": f"{notification_msg}\n群：{audit_data.group_name}（{audit_data.group_id}）\n用户：{audit_data.user_nickname}（{audit_data.user_id}）"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                    
+                    # 构建第二个node节点：用户发送的原始违规消息
+                    user_content = []
+                    
+                    # 处理文本消息
+                    if event.message_str:
+                        user_content.append({
+                            "type": "text",
+                            "data": {
+                                "text": event.message_str
+                            }
+                        })
+                    
+                    # 处理图片消息
+                    for component in event.get_messages():
+                        if isinstance(component, Image) and component.url:
+                            user_content.append({
+                                "type": "image",
+                                "data": {
+                                    "url": component.url
+                                }
+                            })
+                    
+                    # 如果没有内容，添加一个占位文本
+                    if not user_content:
+                        user_content.append({
+                            "type": "text",
+                            "data": {
+                                "text": "[消息内容无法解析]"
+                            }
+                        })
+                    
+                    user_node = {
+                        "type": "node",
+                        "data": {
+                            "user_id": audit_data.user_id,
+                            "nickname": audit_data.user_nickname,
+                            "id": "",
+                            "content": user_content
+                        }
+                    }
+                    
+                    # 构建合并转发消息参数
+                    forward_message = {
+                        "group_id": notify_group_id,
+                        "messages": [bot_node, user_node]
+                    }
+                    
+                    # 发送合并转发消息
+                    await client.api.call_action("send_forward_msg", **forward_message)
+                    logger.info(f"发送合并转发消息到群 {notify_group_id} 成功")
+                    break
+        except Exception as e:
+            logger.error(f"发送合并转发消息失败: {e}")
     
     async def _handle_audit_result(self, audit_data: AuditData):
         """处理审核结果"""
@@ -405,7 +493,7 @@ class GroupAipReviewPlugin(Star):
         # 发送通知
         rule_id = group_config.get("rule_id", "default")
         notification_msg = f"⚠️ 检测到违规内容\n类型: {audit_data.audit_type}\n原因: {audit_data.reason}\n规则ID: {rule_id}"
-        await self._send_notification(group_id, notification_msg, audit_data.group_name, audit_data.user_nickname, audit_data.user_id)
+        await self._send_notification(group_id, notification_msg, audit_data.group_name, audit_data.user_nickname, audit_data.user_id, audit_data.event, audit_data)
         
         # 检查是否需要禁言或踢人
         await self._check_and_apply_punishment(audit_data, group_config)
@@ -417,7 +505,7 @@ class GroupAipReviewPlugin(Star):
         
         # 发送通知给管理员核实
         notification_msg = f"❓ 检测到疑似违规内容\n类型: {audit_data.audit_type}\n原因: {audit_data.reason}\n规则ID: {rule_id}\n请管理员核实处理"
-        await self._send_notification(group_id, notification_msg, audit_data.group_name, audit_data.user_nickname, audit_data.user_id)
+        await self._send_notification(group_id, notification_msg, audit_data.group_name, audit_data.user_nickname, audit_data.user_id, audit_data.event, audit_data)
     
     async def _handle_audit_failure(self, event: AstrMessageEvent, audit_type: str, reason: str, group_config: Dict):
         """处理审核失败"""
@@ -633,3 +721,180 @@ class GroupAipReviewPlugin(Star):
     async def terminate(self):
         """插件销毁"""
         logger.info("群聊内容安全审查插件已卸载")
+
+    # 命令：开启内容审核
+    @filter.command("开启内容审核")
+    async def enable_audit(self, event: AstrMessageEvent):
+        """开启当前群的内容审核"""
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("请在群聊中使用此命令")
+            return
+        
+        # 检查机器人权限
+        try:
+            bot_info = await event.bot.api.call_action("get_group_member_info", group_id=group_id, user_id=int(event.get_self_id()))
+            bot_role = bot_info.get("role")
+            if bot_role not in ["admin", "owner"]:
+                yield event.plain_result("bot权限不足，需要管理员权限")
+                return
+        except Exception as e:
+            logger.error(f"[群消息内容安全审核插件] 检查机器人权限失败: {e}")
+            yield event.plain_result("bot权限不足，需要管理员权限")
+            return
+        
+        # 检查用户权限（bot管理员、群主、管理员跳过审核）
+        if event.is_admin():
+            logger.debug(f"用户为Bot管理员，跳过审核")
+        else:
+            # 检查群权限（群主、管理员跳过审核）
+            sender_role = event.message_obj.raw_message.get("sender", {}).get("role", "member") if event.message_obj.raw_message else "member"
+            if sender_role not in ["admin", "owner"]:
+                yield event.plain_result("您没有权限使用此命令，需要管理员或群主权限")
+                return
+
+        # 获取当前启用的群列表
+        enabled_groups = self.config.get("enabled_groups", [])
+        
+        # 检查是否已经在启用列表中
+        if group_id in enabled_groups:
+            yield event.plain_result(f"本群({group_id})的内容审核已经开启")
+            return
+
+        # 添加到启用列表
+        enabled_groups.append(group_id)
+        self.config["enabled_groups"] = enabled_groups
+        self.config.save_config()
+
+        # 检查是否存在群单独配置项
+        disposal_config = self.config.get("disposal", {})
+        group_custom = disposal_config.get("group_custom", [])
+        has_group_config = False
+        
+        if group_custom and isinstance(group_custom, list):
+            for custom_config in group_custom:
+                if custom_config.get("group_id") == group_id:
+                    has_group_config = True
+                    break
+
+        # 构建回复消息
+        reply_msg = f"✅ 已成功开启本群({group_id})的内容审核"
+        if not has_group_config:
+            reply_msg += "\n\n⚠️ 注意：当前不存在群单独配置项，将使用默认全局配置项，建议前往WebUI添加群单独配置项。"
+
+        yield event.plain_result(reply_msg)
+
+    # 命令：关闭内容审核
+    @filter.command("关闭内容审核")
+    async def disable_audit(self, event: AstrMessageEvent):
+        """关闭当前群的内容审核"""
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("请在群聊中使用此命令")
+            return
+        
+        # 检查机器人权限
+        try:
+            bot_info = await event.bot.api.call_action("get_group_member_info", group_id=group_id, user_id=int(event.get_self_id()))
+            bot_role = bot_info.get("role")
+            if bot_role not in ["admin", "owner"]:
+                yield event.plain_result("bot权限不足，需要管理员权限")
+                return
+        except Exception as e:
+            logger.error(f"[群消息内容安全审核插件] 检查机器人权限失败: {e}")
+            yield event.plain_result("bot权限不足，需要管理员权限")
+            return
+        
+        # 检查用户权限（bot管理员、群主、管理员跳过审核）
+        if event.is_admin():
+            logger.debug(f"用户为Bot管理员，跳过审核")
+        else:
+            # 检查群权限（群主、管理员跳过审核）
+            sender_role = event.message_obj.raw_message.get("sender", {}).get("role", "member") if event.message_obj.raw_message else "member"
+            if sender_role not in ["admin", "owner"]:
+                yield event.plain_result("您没有权限使用此命令，需要管理员或群主权限")
+                return
+
+        # 获取当前启用的群列表
+        enabled_groups = self.config.get("enabled_groups", [])
+        
+        # 检查是否在启用列表中
+        if group_id not in enabled_groups:
+            yield event.plain_result(f"本群({group_id})的内容审核已经关闭")
+            return
+
+        # 从启用列表中移除
+        enabled_groups.remove(group_id)
+        self.config["enabled_groups"] = enabled_groups
+        self.config.save_config()
+
+        yield event.plain_result(f"✅ 已成功关闭本群({group_id})的内容审核")
+
+    # 命令：查看审核配置
+    @filter.command("查看审核配置")
+    async def check_audit_config(self, event: AstrMessageEvent):
+        """查看当前群的审核配置"""
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("请在群聊中使用此命令")
+            return
+        
+        # 检查机器人权限
+        try:
+            bot_info = await event.bot.api.call_action("get_group_member_info", group_id=group_id, user_id=int(event.get_self_id()))
+            bot_role = bot_info.get("role")
+            if bot_role not in ["admin", "owner"]:
+                yield event.plain_result("bot权限不足，需要管理员权限")
+                return
+        except Exception as e:
+            logger.error(f"[群消息内容安全审核插件] 检查机器人权限失败: {e}")
+            yield event.plain_result("bot权限不足，需要管理员权限")
+            return
+        
+        # 检查用户权限（bot管理员、群主、管理员跳过审核）
+        if event.is_admin():
+            logger.debug(f"用户为Bot管理员，跳过审核")
+        else:
+            # 检查群权限（群主、管理员跳过审核）
+            sender_role = event.message_obj.raw_message.get("sender", {}).get("role", "member") if event.message_obj.raw_message else "member"
+            if sender_role not in ["admin", "owner"]:
+                yield event.plain_result("您没有权限使用此命令，需要管理员或群主权限")
+                return
+
+        # 获取群配置
+        group_config = self.get_group_config(group_id)
+        
+        # 检查是否启用
+        enabled_groups = self.config.get("enabled_groups", [])
+        is_enabled = group_id in enabled_groups
+
+        # 检查是否存在群单独配置项
+        disposal_config = self.config.get("disposal", {})
+        group_custom = disposal_config.get("group_custom", [])
+        has_group_config = False
+        
+        if group_custom and isinstance(group_custom, list):
+            for custom_config in group_custom:
+                if custom_config.get("group_id") == group_id:
+                    has_group_config = True
+                    break
+
+        # 构建配置信息
+        config_info = f"📋 群聊内容审核配置\n"
+        config_info += f"群号：{group_id}\n"
+        config_info += f"状态：{'✅已开启' if is_enabled else '❌已关闭'}\n\n"
+        
+        config_info += "当前使用的配置：\n"
+        config_info += f"- 配置类型：{'群单独配置' if has_group_config else '全局默认配置'}\n"
+        config_info += f"- 文本审核：{'✅启用' if self.config.get('enable_text_censor', True) else '❌禁用'}\n"
+        config_info += f"- 图片审核：{'✅启用' if self.config.get('enable_image_censor', True) else '❌禁用'}\n"
+        config_info += f"- 禁言时长：{self._format_mute_duration(group_config.get('mute_duration', 3600))}\n"
+        config_info += f"- 审核规则ID：{group_config.get('rule_id', 'default')}\n"
+        config_info += f"- 是否启用踢人：{'✅是' if group_config.get('kick_user', False) else '❌否'}\n"
+        config_info += f"- 踢人阈值：{group_config.get('kick_user_threshold', 5)}次违规后踢出\n"
+        config_info += f"- 是否踢出并拉黑用户：{'✅是' if group_config.get('is_kick_user_and_block', False) else '❌否'}\n"
+        
+        if not has_group_config:
+            config_info += "\n⚠️ 注意：当前使用的是默认全局配置，建议前往WebUI添加群单独配置项以获得更精细的控制。"
+
+        yield event.plain_result(config_info)
