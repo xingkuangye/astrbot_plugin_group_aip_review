@@ -1,5 +1,7 @@
 import asyncio
 import time
+import json
+import uuid
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -10,13 +12,26 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image, Plain, Node
 from astrbot.api.star import Context, Star, register
 
-# 检查并导入第三方依赖
+# 检查并导入第三方依赖 - 百度
 try:
     from aip import AipContentCensor
     BAIDU_AIP_AVAILABLE = True
 except ImportError:
     BAIDU_AIP_AVAILABLE = False
     AipContentCensor = None
+
+# 检查并导入第三方依赖 - 阿里云
+try:
+    from aliyunsdkcore import client
+    from aliyunsdkcore.profile import region_provider
+    from aliyunsdkgreen.request.v20180509 import TextScanRequest, ImageSyncScanRequest
+    ALIYUN_SDK_AVAILABLE = True
+except ImportError:
+    ALIYUN_SDK_AVAILABLE = False
+    client = None
+    region_provider = None
+    TextScanRequest = None
+    ImageSyncScanRequest = None
 
 try:
     import httpx
@@ -137,13 +152,126 @@ class BaiduAuditAPI:
             logger.error(f"图片审核API调用异常: {e}")
             return {"error": f"API调用异常: {e}"}
 
+
+# 阿里云内容审核API集成类
+class AliyunAuditAPI:
+    """阿里云内容审核API封装类（使用官方SDK）"""
+    
+    def __init__(self, access_key_id: str, access_key_secret: str, region: str = "cn-shanghai"):
+        self.access_key_id = access_key_id
+        self.access_key_secret = access_key_secret
+        self.region = region
+        
+        if not ALIYUN_SDK_AVAILABLE:
+            logger.error("未安装阿里云SDK包，请运行: pip install aliyunsdkcore aliyunsdkgreen")
+            self.client = None
+            return
+            
+        try:
+            # 初始化阿里云客户端
+            self.client = client.AcsClient(access_key_id, access_key_secret, region)
+            # 设置地域端点
+            region_provider.modify_point('Green', region, f'green.{region}.aliyuncs.com')
+            logger.info(f"阿里云内容审核客户端初始化成功，地域: {region}")
+        except Exception as e:
+            logger.error(f"阿里云内容审核客户端初始化失败: {e}")
+            self.client = None
+    
+    async def close(self):
+        """关闭客户端（阿里云SDK不需要显式关闭）"""
+        pass
+    
+    def _sync_text_scan(self, text: str) -> Dict:
+        """同步文本审核调用"""
+        if not self.client:
+            return {"error": "阿里云内容审核客户端未初始化"}
+        
+        try:
+            request = TextScanRequest.TextScanRequest()
+            request.set_accept_format('JSON')
+            
+            task = {
+                "dataId": str(uuid.uuid1()),
+                "content": text
+            }
+            
+            request.set_content(json.dumps({
+                "tasks": [task],
+                "scenes": ["antispam"]  # 使用文本反垃圾场景
+            }))
+            
+            response = self.client.do_action_with_exception(request)
+            return json.loads(response)
+            
+        except Exception as e:
+            logger.error(f"阿里云文本审核API调用异常: {e}")
+            return {"error": f"API调用异常: {str(e)}"}
+    
+    def _sync_image_scan(self, image_url: str) -> Dict:
+        """同步图片审核调用"""
+        if not self.client:
+            return {"error": "阿里云内容审核客户端未初始化"}
+        
+        try:
+            request = ImageSyncScanRequest.ImageSyncScanRequest()
+            request.set_accept_format('JSON')
+            
+            task = {
+                "dataId": str(uuid.uuid1()),
+                "url": image_url
+            }
+            
+            # 同时检测多个场景
+            request.set_content(json.dumps({
+                "tasks": [task],
+                "scenes": ["porn", "terrorism", "ad", "qrcode", "live", "logo"]
+            }))
+            
+            response = self.client.do_action_with_exception(request)
+            return json.loads(response)
+            
+        except Exception as e:
+            logger.error(f"阿里云图片审核API调用异常: {e}")
+            return {"error": f"API调用异常: {str(e)}"}
+    
+    async def text_censor(self, text: str) -> Dict:
+        """文本内容审核（异步封装）"""
+        if not self.client:
+            return {"error": "阿里云内容审核客户端未初始化"}
+        
+        try:
+            with ThreadPoolExecutor() as executor:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    executor, self._sync_text_scan, text
+                )
+            return result
+        except Exception as e:
+            logger.error(f"文本审核异常: {e}")
+            return {"error": f"审核异常: {str(e)}"}
+    
+    async def image_censor(self, image_url: str) -> Dict:
+        """图片内容审核（异步封装）"""
+        if not self.client:
+            return {"error": "阿里云内容审核客户端未初始化"}
+        
+        try:
+            with ThreadPoolExecutor() as executor:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    executor, self._sync_image_scan, image_url
+                )
+            return result
+        except Exception as e:
+            logger.error(f"图片审核异常: {e}")
+            return {"error": f"审核异常: {str(e)}"}
+
+
 # 审核结果解析器
 class AuditResultParser:
     """审核结果解析器"""
     
     @staticmethod
-    def parse_text_result(result: Dict) -> Tuple[str, str]:
-        """解析文本审核结果"""
+    def parse_baidu_text_result(result: Dict) -> Tuple[str, str]:
+        """解析百度文本审核结果"""
         if "error" in result:
             return "审核失败", result["error"]
         
@@ -169,8 +297,8 @@ class AuditResultParser:
             return "审核失败", "未知审核结果"
     
     @staticmethod
-    def parse_image_result(result: Dict) -> Tuple[str, str]:
-        """解析图片审核结果"""
+    def parse_baidu_image_result(result: Dict) -> Tuple[str, str]:
+        """解析百度图片审核结果"""
         if "error" in result:
             return "审核失败", result["error"]
         
@@ -198,6 +326,114 @@ class AuditResultParser:
             return "疑似", reason_text
         else:
             return "审核失败", "未知审核结果"
+    
+    @staticmethod
+    def parse_aliyun_text_result(result: Dict) -> Tuple[str, str]:
+        """解析阿里云文本审核结果"""
+        if "error" in result:
+            return "审核失败", result["error"]
+        
+        try:
+            if result.get("code") != 200:
+                return "审核失败", f"阿里云返回错误码: {result.get('code')}"
+            
+            data = result.get("data", [])
+            if not data:
+                return "审核失败", "未获取到审核数据"
+            
+            task_result = data[0]
+            if task_result.get("code") != 200:
+                return "审核失败", f"任务错误码: {task_result.get('code')}"
+            
+            # 解析阿里云结果
+            # suggestion: pass(通过), block(违规), review(需要人工审核)
+            results = task_result.get("results", [])
+            
+            if not results:
+                return "合规", ""
+            
+            # 综合判断
+            has_block = False
+            has_review = False
+            reasons = []
+            
+            for scene_result in results:
+                suggestion = scene_result.get("suggestion", "")
+                scene = scene_result.get("scene", "")
+                label = scene_result.get("label", "")
+                
+                if suggestion == "block":
+                    has_block = True
+                    if label:
+                        reasons.append(f"{scene}: {label}")
+                    else:
+                        reasons.append(scene)
+                elif suggestion == "review":
+                    has_review = True
+            
+            if has_block:
+                return "不合规", ", ".join(reasons) if reasons else "内容违规"
+            elif has_review:
+                return "疑似", ", ".join(reasons) if reasons else "内容疑似违规，需要人工审核"
+            else:
+                return "合规", ""
+                
+        except Exception as e:
+            return "审核失败", f"解析结果异常: {str(e)}"
+    
+    @staticmethod
+    def parse_aliyun_image_result(result: Dict) -> Tuple[str, str]:
+        """解析阿里云图片审核结果"""
+        if "error" in result:
+            return "审核失败", result["error"]
+        
+        try:
+            if result.get("code") != 200:
+                return "审核失败", f"阿里云返回错误码: {result.get('code')}"
+            
+            data = result.get("data", [])
+            if not data:
+                return "审核失败", "未获取到审核数据"
+            
+            task_result = data[0]
+            if task_result.get("code") != 200:
+                return "审核失败", f"任务错误码: {task_result.get('code')}"
+            
+            # 解析阿里云结果
+            results = task_result.get("results", [])
+            
+            if not results:
+                return "合规", ""
+            
+            # 综合判断
+            has_block = False
+            has_review = False
+            reasons = []
+            
+            for scene_result in results:
+                suggestion = scene_result.get("suggestion", "")
+                scene = scene_result.get("scene", "")
+                label = scene_result.get("label", "")
+                
+                if suggestion == "block":
+                    has_block = True
+                    if label:
+                        reasons.append(f"{scene}: {label}")
+                    else:
+                        reasons.append(scene)
+                elif suggestion == "review":
+                    has_review = True
+            
+            if has_block:
+                return "不合规", ", ".join(reasons) if reasons else "图片违规"
+            elif has_review:
+                return "疑似", ", ".join(reasons) if reasons else "图片疑似违规，需要人工审核"
+            else:
+                return "合规", ""
+                
+        except Exception as e:
+            return "审核失败", f"解析结果异常: {str(e)}"
+
 
 # 违规记录管理器
 class ViolationManager:
@@ -255,25 +491,43 @@ class ViolationManager:
             if not self.group_violations[group_id]:
                 del self.group_violations[group_id]
 
+
 # 主插件类
 @register(
     "astrbot_plugin_group_aip_review",
     "VanillaNahida",
-    "基于百度内容审核API的群聊内容安全审查插件",
-    "1.0.0"
-    )
+    "基于百度/阿里云内容审核API的群聊内容安全审查插件，支持双API切换",
+    "1.1.0"
+)
 class GroupAipReviewPlugin(Star):
-    """基于百度内容审核API的群聊内容安全审查插件"""
+    """基于百度/阿里云内容审核API的群聊内容安全审查插件"""
     
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
         self.baidu_api = None
+        self.aliyun_api = None
         self.audit_parser = AuditResultParser()
         self.violation_manager = ViolationManager()
         
+        # 初始化API
+        self._init_apis()
+    
+    def _init_apis(self):
+        """初始化API客户端"""
+        # 获取API提供商配置
+        api_provider = self.config.get("api_provider", "baidu")
+        
         # 初始化百度API
-        self._init_baidu_api()
+        if api_provider == "baidu":
+            self._init_baidu_api()
+        elif api_provider == "aliyun":
+            self._init_aliyun_api()
+        else:
+            # 尝试同时初始化两个API，优先使用百度
+            self._init_baidu_api()
+            if not self.baidu_api or not self.baidu_api.client:
+                self._init_aliyun_api()
     
     def _init_baidu_api(self):
         """初始化百度API"""
@@ -284,16 +538,60 @@ class GroupAipReviewPlugin(Star):
         
         if not api_key or not secret_key:
             logger.warning("百度API配置不完整，插件将无法正常工作")
+            self.baidu_api = None
             return
         
         self.baidu_api = BaiduAuditAPI(api_key, secret_key, strategy_id)
-        logger.info("百度内容审核API初始化完成")
+        if self.baidu_api.client:
+            logger.info("百度内容审核API初始化完成")
+        else:
+            self.baidu_api = None
+    
+    def _init_aliyun_api(self):
+        """初始化阿里云API"""
+        aliyun_config = self.config.get("aliyun_audit", {})
+        access_key_id = aliyun_config.get("access_key_id")
+        access_key_secret = aliyun_config.get("access_key_secret")
+        region = aliyun_config.get("region", "cn-shanghai")
+        
+        if not access_key_id or not access_key_secret:
+            logger.warning("阿里云API配置不完整，插件将无法正常工作")
+            self.aliyun_api = None
+            return
+        
+        self.aliyun_api = AliyunAuditAPI(access_key_id, access_key_secret, region)
+        if self.aliyun_api.client:
+            logger.info(f"阿里云内容审核API初始化完成，地域: {region}")
+        else:
+            self.aliyun_api = None
+    
+    def get_current_api(self):
+        """获取当前使用的API客户端"""
+        api_provider = self.config.get("api_provider", "baidu")
+        
+        if api_provider == "baidu" and self.baidu_api and self.baidu_api.client:
+            return self.baidu_api
+        elif api_provider == "aliyun" and self.aliyun_api and self.aliyun_api.client:
+            return self.aliyun_api
+        else:
+            # 回退逻辑：尝试可用的API
+            if self.baidu_api and self.baidu_api.client:
+                logger.info("使用百度API（配置回退）")
+                return self.baidu_api
+            if self.aliyun_api and self.aliyun_api.client:
+                logger.info("使用阿里云API（配置回退）")
+                return self.aliyun_api
+        
+        return None
     
     async def terminate(self):
         """插件卸载时关闭HTTP客户端"""
         if self.baidu_api:
             await self.baidu_api.close()
             logger.info("百度API HTTP客户端已关闭")
+        if self.aliyun_api:
+            await self.aliyun_api.close()
+            logger.info("阿里云API已关闭")
     
     def get_group_config(self, group_id: str) -> Dict:
         """获取群组配置"""
@@ -646,7 +944,7 @@ class GroupAipReviewPlugin(Star):
             return
 
         # 调试输出
-        logger.debug(f"【百度内容审核】原始消息：{event.message_obj.raw_message}")
+        logger.debug(f"【内容审核】原始消息：{event.message_obj.raw_message}")
         
         # 检查用户权限（bot管理员、群主、管理员跳过审核）
         # 直接从原始消息的role字段检查权限
@@ -660,9 +958,10 @@ class GroupAipReviewPlugin(Star):
             logger.debug(f"用户为{sender_role}，跳过审核")
             return
         
-        # 检查百度API是否可用
-        if not self.baidu_api:
-            logger.warning("百度API未初始化，跳过审核")
+        # 检查API是否可用
+        current_api = self.get_current_api()
+        if not current_api:
+            logger.warning("所有API均未初始化，跳过审核")
             return
         
         # 获取群名称和用户信息
@@ -691,8 +990,17 @@ class GroupAipReviewPlugin(Star):
     async def _audit_text(self, event: AstrMessageEvent, text: str, group_name: str, user_nickname: str, user_id: str):
         """文本审核"""
         try:
-            result = await self.baidu_api.text_censor(text)
-            audit_result, reason = self.audit_parser.parse_text_result(result)
+            api_provider = self.config.get("api_provider", "baidu")
+            
+            if api_provider == "aliyun" and self.aliyun_api and self.aliyun_api.client:
+                result = await self.aliyun_api.text_censor(text)
+                audit_result, reason = self.audit_parser.parse_aliyun_text_result(result)
+            elif self.baidu_api and self.baidu_api.client:
+                result = await self.baidu_api.text_censor(text)
+                audit_result, reason = self.audit_parser.parse_baidu_text_result(result)
+            else:
+                logger.warning("没有可用的文本审核API")
+                return
             
             logger.info(f"文本审核结果: {audit_result} - 原因: {reason}")
             audit_data = AuditData(event, "文本", audit_result, reason, group_name, user_nickname, user_id)
@@ -704,8 +1012,17 @@ class GroupAipReviewPlugin(Star):
     async def _audit_image(self, event: AstrMessageEvent, image_url: str, group_name: str, user_nickname: str, user_id: str):
         """图片审核"""
         try:
-            result = await self.baidu_api.image_censor(image_url)
-            audit_result, reason = self.audit_parser.parse_image_result(result)
+            api_provider = self.config.get("api_provider", "baidu")
+            
+            if api_provider == "aliyun" and self.aliyun_api and self.aliyun_api.client:
+                result = await self.aliyun_api.image_censor(image_url)
+                audit_result, reason = self.audit_parser.parse_aliyun_image_result(result)
+            elif self.baidu_api and self.baidu_api.client:
+                result = await self.baidu_api.image_censor(image_url)
+                audit_result, reason = self.audit_parser.parse_baidu_image_result(result)
+            else:
+                logger.warning("没有可用的图片审核API")
+                return
             
             logger.info(f"图片审核结果: {audit_result} - 原因: {reason}")
             audit_data = AuditData(event, "图片", audit_result, reason, group_name, user_nickname, user_id)
@@ -716,7 +1033,14 @@ class GroupAipReviewPlugin(Star):
     
     async def initialize(self):
         """插件初始化"""
-        logger.info("群聊内容安全审查插件初始化完成")
+        # 显示当前使用的API信息
+        api_provider = self.config.get("api_provider", "baidu")
+        current_api = self.get_current_api()
+        
+        if current_api == self.aliyun_api:
+            logger.info("群聊内容安全审查插件初始化完成，使用阿里云内容安全API")
+        else:
+            logger.info("群聊内容安全审查插件初始化完成，使用百度内容审核API")
     
     async def terminate(self):
         """插件销毁"""
@@ -867,7 +1191,7 @@ class GroupAipReviewPlugin(Star):
         # 检查是否启用
         enabled_groups = self.config.get("enabled_groups", [])
         is_enabled = group_id in enabled_groups
-
+        
         # 检查是否存在群单独配置项
         disposal_config = self.config.get("disposal", {})
         group_custom = disposal_config.get("group_custom", [])
@@ -878,11 +1202,16 @@ class GroupAipReviewPlugin(Star):
                 if custom_config.get("group_id") == group_id:
                     has_group_config = True
                     break
+        
+        # 获取当前API提供商
+        api_provider = self.config.get("api_provider", "baidu")
+        api_name = "百度内容审核" if api_provider == "baidu" else "阿里云内容安全"
 
         # 构建配置信息
         config_info = f"📋 群聊内容审核配置\n"
         config_info += f"群号：{group_id}\n"
-        config_info += f"状态：{'✅已开启' if is_enabled else '❌已关闭'}\n\n"
+        config_info += f"状态：{'✅已开启' if is_enabled else '❌已关闭'}\n"
+        config_info += f"API提供商：{api_name}\n\n"
         
         config_info += "当前使用的配置：\n"
         config_info += f"- 配置类型：{'群单独配置' if has_group_config else '全局默认配置'}\n"
