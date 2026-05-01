@@ -1,9 +1,1 @@
-# 百度内容审核SDK
-baidu-aip==4.16.13
-
-# 阿里云内容安全SDK
-aliyunsdkcore>=2.13.36
-aliyunsdkgreen>=3.2.6
-
-# HTTP客户端（用于下载图片）
-httpx>=0.25.0
+baidu-aip==4.16.13\naliyunsdkcore>=2.13.36\naliyunsdkgreen>=3.2.6\nhttpx>=0.25.0
